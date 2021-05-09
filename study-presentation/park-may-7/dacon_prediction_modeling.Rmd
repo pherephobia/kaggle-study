@@ -137,7 +137,7 @@ chart.Correlation(ulsan %>% select(-1), histogram=TRUE, pch=19)
 그리고 일조량과 일사량은 개념 상 굉장히 높은 상관관계를 가질 수밖에
 없다. 왜냐하면 일사량은 일조량에 포함된 것이기 때문이다.
 
--   일조량: 일정한 물체의 표변이나 지표면에 비치는 햇볕의 양
+-   일조량: 일정한 물체의 표면이나 지표면에 비치는 햇볕의 양
 
 -   일사량: 구름이나 안개 등의 방해 없이 지구를 향해 비춰지는 빛의 양
 
@@ -236,6 +236,62 @@ dj_lm_model <-
 lm.mod_dj <- 
     dj_lm_model %>% 
     fit(일사 ~ ., data = dangjin_train2)
+
+## XGBoost
+
+xgb_spec <- boost_tree(
+    trees = 1000, # 앙상블에 포함되는 tree의 수 
+    tree_depth = tune(), # 얼마만큼 노드를 split할건지 
+    min_n = tune(), # 노드를 분할하는데 필요한 최소 데이터의 수
+    loss_reduction = tune(), # 노드 분할에 필요한 loss의 감소량 
+    sample_size = tune(), # The amount of data exposed to the fitting routine
+    mtry = tune(), # The number of predictors that will be randomly sampled at each split when creating the tree models. 
+    learn_rate = tune() 
+) %>% 
+    set_engine('xgboost', objective = "reg:squarederror") %>% 
+    set_mode('regression')
+
+params <- parameters(xgb_spec) %>% 
+    finalize(dangjin_train2)
+
+xgb_wf <- workflow() %>% 
+    add_formula(일사~.) %>% 
+    add_model(xgb_spec)
+
+set.seed(2021)
+vb_folds <- vfold_cv(dangjin_train2, v = 5, strata = 일사)
+
+doParallel::registerDoParallel()
+xgb_res <- tune_bayes(
+    object = xgb_wf, # recipe, formula를 지정해준 workflow 
+    resamples = vb_folds, 
+    param_info = params, 
+    iter = 30, 
+    metrics = metric_set(rmse), 
+    initial = 10, 
+    control = control_bayes(
+        verbose = TRUE, 
+        no_improve = 10, 
+        seed = 123) 
+)
+
+best_param <- select_best(xgb_res, 'rmse')
+
+final_xgb <- finalize_workflow(xgb_wf, best_param)
+
+final_model <- finalize_model(xgb_spec, best_param) 
+
+final_workflow <- xgb_wf %>% update_model(final_model)
+
+xgb_fit <- fit(final_workflow, data = train2)
+
+
+pred_xgb <- 
+    predict(xgb_fit, dangjin_test2) %>% 
+    mutate(modelo = "XGBoost")
+pred_xgb %>% head()
+
+pred_xgb$.pred <- exp(pred_xgb$.pred)-1
 ```
 
 ## Prediction
